@@ -1,0 +1,166 @@
+name: Repackage Latest Release
+
+on:
+  schedule:
+    # Check for new releases every week (Sunday at 00:00 UTC)
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+    inputs:
+      force_release:
+        description: 'Force release regardless of timestamp (auto-enabled for manual runs)'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  check-and-process:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get latest ungoogled-chromium release
+        id: get_release
+        run: |
+          # Get latest release info from ungoogled-chromium-windows
+          RELEASE_INFO=$(curl -s https://api.github.com/repos/ungoogled-software/ungoogled-chromium-windows/releases/latest)
+          
+          # Extract tag name and find the x64 zip asset
+          TAG_NAME=$(echo "$RELEASE_INFO" | jq -r '.tag_name')
+          ASSET_URL=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name | contains("windows_x64.zip")) | .browser_download_url')
+          ASSET_NAME=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name | contains("windows_x64.zip")) | .name')
+          PUBLISHED_AT=$(echo "$RELEASE_INFO" | jq -r '.published_at')
+          
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "asset_url=$ASSET_URL" >> $GITHUB_OUTPUT
+          echo "asset_name=$ASSET_NAME" >> $GITHUB_OUTPUT
+          echo "published_at=$PUBLISHED_AT" >> $GITHUB_OUTPUT
+          
+          # Extract version from filename (e.g., ungoogled-chromium_144.0.7559.109-1.1_windows_x64.zip)
+          VERSION=$(echo "$ASSET_NAME" | grep -oP '(?<=ungoogled-chromium_)[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
+          REVISION=$(echo "$ASSET_NAME" | grep -oP '(?<=-)[0-9]+\.[0-9]+(?=_windows)')
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "revision=$REVISION" >> $GITHUB_OUTPUT
+
+      - name: Check release timestamp
+        id: check_timestamp
+        run: |
+          PUBLISHED_AT="${{ steps.get_release.outputs.published_at }}"
+          PUBLISHED_TIMESTAMP=$(date -d "$PUBLISHED_AT" +%s)
+          CURRENT_TIMESTAMP=$(date +%s)
+          WEEK_IN_SECONDS=$((7 * 24 * 60 * 60))
+          AGE_IN_SECONDS=$((CURRENT_TIMESTAMP - PUBLISHED_TIMESTAMP))
+          
+          echo "Published: $PUBLISHED_AT"
+          echo "Age: $((AGE_IN_SECONDS / 86400)) days"
+          
+          # Check if this is a manual run or scheduled run
+          IS_MANUAL="${{ github.event_name == 'workflow_dispatch' }}"
+          FORCE_RELEASE="${{ inputs.force_release }}"
+          
+          echo "is_manual=$IS_MANUAL" >> $GITHUB_OUTPUT
+          
+          if [ "$IS_MANUAL" = "true" ]; then
+            echo "✓ Manual run detected - proceeding regardless of timestamp"
+            echo "should_process=true" >> $GITHUB_OUTPUT
+          elif [ $AGE_IN_SECONDS -le $WEEK_IN_SECONDS ]; then
+            echo "✓ Release is within 1 week ($((AGE_IN_SECONDS / 86400)) days old) - proceeding"
+            echo "should_process=true" >> $GITHUB_OUTPUT
+          else
+            echo "✗ Release is older than 1 week ($((AGE_IN_SECONDS / 86400)) days old) - skipping"
+            echo "should_process=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check if release already processed
+        id: check_existing
+        if: steps.check_timestamp.outputs.should_process == 'true'
+        run: |
+          # Check if we already have a release with this tag
+          EXISTING=$(gh release view "${{ steps.get_release.outputs.tag_name }}" 2>&1 || echo "not found")
+          
+          if echo "$EXISTING" | grep -q "not found"; then
+            echo "exists=false" >> $GITHUB_OUTPUT
+          else
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "⚠ Release ${{ steps.get_release.outputs.tag_name }} already exists - skipping"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Download and process release
+        if: steps.check_timestamp.outputs.should_process == 'true' && steps.check_existing.outputs.exists == 'false'
+        run: |
+          # Download the asset
+          wget -q "${{ steps.get_release.outputs.asset_url }}" -O original.zip
+          
+          # Create temporary directory
+          mkdir -p temp_extract
+          mkdir -p chrome-win
+          
+          # Extract the original zip
+          unzip -q original.zip -d temp_extract
+          
+          # Find the inner directory and move contents
+          INNER_DIR=$(find temp_extract -mindepth 1 -maxdepth 1 -type d)
+          mv "$INNER_DIR"/* chrome-win/
+          
+          # Create the final chrome-win.zip (zip the chrome-win folder)
+          zip -q -r chrome-win.zip chrome-win
+          
+          # Clean up
+          rm -rf temp_extract original.zip
+
+      - name: Create updateurl.txt
+        if: steps.check_timestamp.outputs.should_process == 'true' && steps.check_existing.outputs.exists == 'false'
+        run: |
+          # Get current timestamp
+          TIMESTAMP=$(date +%s)
+          
+          # Get the latest commit hash from this repo
+          COMMIT=$(git rev-parse HEAD)
+          
+          # Create updateurl.txt with the required format
+          cat > updateurl.txt << EOF
+          browser=chromium;os=windows;architecture=64-bit;timestamp=$TIMESTAMP;editor=ungoogled;channel=stable;repository=https://github.com/${{ github.repository }}/releases;download=https://github.com/${{ github.repository }}/releases/latest/download/chrome-win.zip;version=${{ steps.get_release.outputs.version }};revision=${{ steps.get_release.outputs.revision }};commit=$COMMIT
+          EOF
+          
+          # Remove any leading whitespace
+          sed -i 's/^[[:space:]]*//' updateurl.txt
+
+      - name: Create GitHub Release
+        if: steps.check_timestamp.outputs.should_process == 'true' && steps.check_existing.outputs.exists == 'false'
+        run: |
+          # Add manual run indicator to release notes if applicable
+          if [ "${{ steps.check_timestamp.outputs.is_manual }}" = "true" ]; then
+            MANUAL_NOTE="
+          
+          ⚙️ This release was triggered manually."
+          else
+            MANUAL_NOTE=""
+          fi
+          
+          gh release create "${{ steps.get_release.outputs.tag_name }}" \
+            chrome-win.zip \
+            updateurl.txt \
+            --title "${{ steps.get_release.outputs.version }}-${{ steps.get_release.outputs.revision }}" \
+            --notes "Ungoogled Chromium - Version ${{ steps.get_release.outputs.version }}-${{ steps.get_release.outputs.revision }}
+          
+          Original release: https://github.com/ungoogled-software/ungoogled-chromium-windows/releases/tag/${{ steps.get_release.outputs.tag_name }}
+          
+          Published on: ${{ steps.get_release.outputs.published_at }}$MANUAL_NOTE"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Skip notification
+        if: steps.check_timestamp.outputs.should_process == 'false'
+        run: |
+          echo "::notice::Skipping release - latest ungoogled-chromium release is older than 1 week"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf chrome-win chrome-win.zip updateurl.txt temp_extract original.zip
