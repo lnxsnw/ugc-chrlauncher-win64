@@ -86,7 +86,7 @@ ChromiumUpdateOnly=false
 # stable-codecs-nosync
 #	Unofficial stable builds with codecs and without google services
 #	!!! DISCONTINUED since June 2018 !!!
-ChromiumType=Custom
+ChromiumType=ugc-chrlauncher-win64
 
 # Check for new Chromium version once in X days (integer):
 #
