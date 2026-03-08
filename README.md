@@ -1,9 +1,10 @@
-# ugc-chrlauncher-win64
-Repository that grabs https://github.com/ungoogled-software/ungoogled-chromium-windows zip release assets then repackages them to https://github.com/uazo/cromite format for easy updates in https://github.com/henrypp/chrlauncher
+# lnxsnw/ugc-chrlauncher-win64
+A repository that grabs https://github.com/ungoogled-software/ungoogled-chromium-windows zip release assets then repackages them to https://github.com/uazo/cromite release format for easy updates in https://github.com/henrypp/chrlauncher
 
-This repository and the configuration below assumes you are running Windows 64-bit
+This repository and the configuration below assumes you are running Windows 64-bit.
+Widevine is not supported on this build, [even by following the Woolyss guide](https://chromium.woolyss.com/#widevine).
 
-### Your chrlauncher.ini should look like:
+## Your chrlauncher.ini should look like:
 ```
 [chrlauncher]
 
@@ -12,10 +13,10 @@ ChromiumUpdateUrl=https://github.com/lnxsnw/ugc-chrlauncher-win64/releases/lates
 
 # Command line for Chromium (string):
 # See here: https://peter.sh/experiments/chromium-command-line-switches/
-# Use below to use on any device:
-# ChromiumCommandLine=--flag-switches-begin --user-data-dir=..\profile --no-default-browser-check --disable-encryption --disable-machine-id --disable-features=DeviceBoundSessions,EnableBoundSessionCredentials,EnableBoundSessionCredentialsSoftwareKeysForManualTesting,PersistDeviceBoundSessions --flag-switches-end
-# Else, this is the default:
-ChromiumCommandLine=--flag-switches-begin --user-data-dir=..\profile --no-default-browser-check --flag-switches-end
+# Use below to use on any device, portable mode (WARNING: Disables App Bound Encryption to work):
+#ChromiumCommandLine=--flag-switches-begin --user-data-dir=..\profile --no-default-browser-check --no-first-run --disable-encryption --disable-machine-id --disable-gpu-shader-disk-cache --disk-cache-size=1 --media-cache-size=1 --disable-background-networking --disable-logging --no-report-upload --disable-features=DeviceBoundSessions,EnableBoundSessionCredentials,EnableBoundSessionCredentialsSoftwareKeysForManualTesting,PersistDeviceBoundSessions,MediaRouter,Translate --flag-switches-end
+# Else, use chrlauncher's defaults:
+ChromiumCommandLine=--flag-switches-begin --user-data-dir=..\profile --no-default-browser-check --disable-logging --no-report-upload --flag-switches-end
 
 # Chromium executable file name (string):
 ChromiumBinary=chrome.exe
@@ -104,4 +105,24 @@ ChromiumLastCheck=0
 
 # Set custom useragent (string):
 #UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/97.0.0.0 Safari/537.36
+```
+
+## Search Engines
+### For Google:
+URL with %s in place of query
+```
+https://www.google.com/search?q=%s
+```
+Suggestions URL with %s in place of query
+```
+https://www.google.com/complete/search?client=chrome&q=%s
+```
+### For YouTube
+URL with %s in place of query
+```
+https://www.youtube.com/results?search_query=%s
+```
+Suggestions URL with %s in place of query
+```
+https://www.google.com/complete/search?client=chrome&ds=yt&q=%s
 ```
