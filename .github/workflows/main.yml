@@ -1,81 +1,74 @@
-name: Repackage Latest Release
+name: Repackage Latest UGC Release
 
 on:
   schedule:
-    # Trigger daily at midnight UTC
     - cron: '0 0 * * *'
   workflow_dispatch:
     inputs:
       force_release:
-        description: 'Force release regardless of checks (Check this to force release)'
+        description: 'Trigger a force release (Check this to confirm)'
         required: false
         type: boolean
         default: true
 
 permissions:
-  contents: write  
+  contents: write
 
 jobs:
   check-and-process:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check latest releases & Get Asset Info
+      - name: Check latest UGC release
         id: check
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # 1. Fetch latest release info from upstream
-          # (Using || true to prevent the script from crashing if curl fails)
           RELEASE_INFO=$(curl -s https://api.github.com/repos/ungoogled-software/ungoogled-chromium-windows/releases/latest || true)
           UGC_TAG=$(echo "$RELEASE_INFO" | jq -r '.tag_name // empty')
-          
-          # If the API fails (e.g. rate limits), exit gracefully so it doesn't alert you as a "failure"
+
           if [ -z "$UGC_TAG" ]; then
-            echo "::warning::Could not fetch upstream tag. GitHub API might be rate-limited. Skipping gracefully to avoid alert spam."
+            echo "::warning::Could not fetch upstream tag. GitHub API might be rate-limited. Skipping gracefully."
             echo "should_process=false" >> $GITHUB_OUTPUT
             exit 0
           fi
-          
-          # 2. Fetch the latest release tag from our local repository natively
+
           LOCAL_TAG=$(gh release view --json tagName -q .tagName 2>/dev/null || echo "none")
-          
-          # 3. Compare releases descriptively
-          IS_MANUAL="${{ github.event_name == 'workflow_dispatch' }}"
-          FORCE_RELEASE="${{ inputs.force_release }}"
-          
-          if [ "$IS_MANUAL" = "true" ] && [ "$FORCE_RELEASE" = "true" ]; then
-            echo "::notice::Force release triggered manually. Proceeding."
-            SHOULD_PROCESS="true"
+
+          SHOULD_PROCESS="false"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force_release }}" = "true" ]; then
+            if [ "$UGC_TAG" = "$LOCAL_TAG" ]; then
+              echo "::notice::Force release triggered, but local release ($LOCAL_TAG) matches upstream ($UGC_TAG). Skipping..."
+            else
+              echo "::notice::Force release triggered. Local: $LOCAL_TAG -> Upstream: $UGC_TAG. Proceeding..."
+              SHOULD_PROCESS="true"
+            fi
           elif [ "$UGC_TAG" = "$LOCAL_TAG" ]; then
-            echo "::notice::Local release ($LOCAL_TAG) is exactly the same as upstream ($UGC_TAG). Nothing to do."
-            SHOULD_PROCESS="false"
+            echo "::notice::Local release ($LOCAL_TAG) matches upstream ($UGC_TAG). Skipping..."
           else
-            echo "::notice::New upstream release found! Local: $LOCAL_TAG -> Upstream: $UGC_TAG. Proceeding with repackage."
+            echo "::notice::New upstream release found! Local: $LOCAL_TAG -> Upstream: $UGC_TAG. Proceeding..."
             SHOULD_PROCESS="true"
           fi
-          
+
           echo "should_process=$SHOULD_PROCESS" >> $GITHUB_OUTPUT
-          
-          # 4. Only parse assets if we actually need to process them
+
           if [ "$SHOULD_PROCESS" = "true" ]; then
             ASSET_URL=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name | contains("windows_x64.zip")) | .browser_download_url')
             ASSET_NAME=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name | contains("windows_x64.zip")) | .name')
             PUBLISHED_AT=$(echo "$RELEASE_INFO" | jq -r '.published_at')
-            
-            # Using '|| echo ""' prevents grep from throwing exit code 1 if upstream slightly changes naming schemes
+
             VERSION=$(echo "$ASSET_NAME" | grep -oP '(?<=ungoogled-chromium_)[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || echo "")
             REVISION=$(echo "$ASSET_NAME" | grep -oP '(?<=-)[0-9]+\.[0-9]+(?=_windows)' || echo "")
-            
-            # Failsafe check just in case upstream changes their zip file name entirely
+
             if [ -z "$VERSION" ] || [ -z "$REVISION" ]; then
               echo "::error::Could not extract VERSION or REVISION from asset name: $ASSET_NAME. Upstream may have changed their naming format."
-              exit 1 # We DO want an alert here because the workflow code needs fixing
+              exit 1
             fi
-            
+
             echo "ugc_tag=$UGC_TAG" >> $GITHUB_OUTPUT
             echo "asset_url=$ASSET_URL" >> $GITHUB_OUTPUT
             echo "published_at=$PUBLISHED_AT" >> $GITHUB_OUTPUT
@@ -87,13 +80,13 @@ jobs:
         if: steps.check.outputs.should_process == 'true'
         run: |
           wget -q "${{ steps.check.outputs.asset_url }}" -O original.zip
-          
+
           mkdir -p temp_extract chrome-win
           unzip -q original.zip -d temp_extract
-          
+
           INNER_DIR=$(find temp_extract -mindepth 1 -maxdepth 1 -type d)
           mv "$INNER_DIR"/* chrome-win/
-          
+
           zip -q -r chrome-win.zip chrome-win
           rm -rf temp_extract original.zip
 
@@ -102,11 +95,10 @@ jobs:
         run: |
           TIMESTAMP=$(date +%s)
           COMMIT=$(git rev-parse HEAD)
-          
           cat > updateurl.txt << EOF
           browser=chromium;os=windows;architecture=64-bit;timestamp=$TIMESTAMP;editor=ungoogled;channel=stable;repository=https://github.com/${{ github.repository }}/releases;download=https://github.com/${{ github.repository }}/releases/latest/download/chrome-win.zip;version=${{ steps.check.outputs.version }};revision=${{ steps.check.outputs.revision }};commit=$COMMIT
           EOF
-          
+
           sed -i 's/^[[:space:]]*//' updateurl.txt
 
       - name: Publish GitHub Release
@@ -114,12 +106,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            MANUAL_NOTE="
+
+          ⚙️ This release was triggered manually."
+          else
+            MANUAL_NOTE=""
+          fi
+
           gh release create "${{ steps.check.outputs.ugc_tag }}" \
             chrome-win.zip \
             updateurl.txt \
             --title "${{ steps.check.outputs.version }}-${{ steps.check.outputs.revision }}" \
             --notes "Ungoogled Chromium - Version ${{ steps.check.outputs.version }}-${{ steps.check.outputs.revision }}
-          
+
           Original release: https://github.com/ungoogled-software/ungoogled-chromium-windows/releases/tag/${{ steps.check.outputs.ugc_tag }}
-          
-          Published on: ${{ steps.check.outputs.published_at }}"
+
+          Published on: ${{ steps.check.outputs.published_at }}$MANUAL_NOTE"
