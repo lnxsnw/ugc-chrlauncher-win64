@@ -1,4 +1,4 @@
-name: Repackage Latest UGC Release
+name: Repackage Latest Release
 
 on:
   schedule:
@@ -7,12 +7,11 @@ on:
   workflow_dispatch:
     inputs:
       force_release:
-        description: 'Force release regardless of checks'
+        description: 'Force release regardless of checks (Check this to force release)'
         required: false
         type: boolean
         default: true
 
-# Essential permission to allow the workflow to publish a release
 permissions:
   contents: write  
 
@@ -30,48 +29,59 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # 1. Fetch latest release info from upstream
-          RELEASE_INFO=$(curl -s https://api.github.com/repos/ungoogled-software/ungoogled-chromium-windows/releases/latest)
-          UGC_TAG=$(echo "$RELEASE_INFO" | jq -r '.tag_name')
+          # (Using || true to prevent the script from crashing if curl fails)
+          RELEASE_INFO=$(curl -s https://api.github.com/repos/ungoogled-software/ungoogled-chromium-windows/releases/latest || true)
+          UGC_TAG=$(echo "$RELEASE_INFO" | jq -r '.tag_name // empty')
+          
+          # If the API fails (e.g. rate limits), exit gracefully so it doesn't alert you as a "failure"
+          if [ -z "$UGC_TAG" ]; then
+            echo "::warning::Could not fetch upstream tag. GitHub API might be rate-limited. Skipping gracefully to avoid alert spam."
+            echo "should_process=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
           
           # 2. Fetch the latest release tag from our local repository natively
           LOCAL_TAG=$(gh release view --json tagName -q .tagName 2>/dev/null || echo "none")
           
-          if [ "$UGC_TAG" = "null" ] || [ -z "$UGC_TAG" ]; then
-            echo "::error::Failed to fetch upstream tag"
-            exit 1
-          fi
-          
-          # 3. Compare releases to either proceed or abort
+          # 3. Compare releases descriptively
           IS_MANUAL="${{ github.event_name == 'workflow_dispatch' }}"
           FORCE_RELEASE="${{ inputs.force_release }}"
           
           if [ "$IS_MANUAL" = "true" ] && [ "$FORCE_RELEASE" = "true" ]; then
-            echo "Force release triggered manually."
-            echo "should_process=true" >> $GITHUB_OUTPUT
+            echo "::notice::Force release triggered manually. Proceeding."
+            SHOULD_PROCESS="true"
           elif [ "$UGC_TAG" = "$LOCAL_TAG" ]; then
-            echo "::notice::Latest release ($UGC_TAG) is identical on both repositories. Aborting."
-            echo "should_process=false" >> $GITHUB_OUTPUT
-            exit 0 # Safely stop step execution here since we're aborting
+            echo "::notice::Local release ($LOCAL_TAG) is exactly the same as upstream ($UGC_TAG). Nothing to do."
+            SHOULD_PROCESS="false"
           else
-            echo "New release found: $UGC_TAG (Local was: $LOCAL_TAG)"
-            echo "should_process=true" >> $GITHUB_OUTPUT
+            echo "::notice::New upstream release found! Local: $LOCAL_TAG -> Upstream: $UGC_TAG. Proceeding with repackage."
+            SHOULD_PROCESS="true"
           fi
           
-          # 4. Extract explicit paths and names from the JSON assets exactly as originally intended
-          ASSET_URL=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name | contains("windows_x64.zip")) | .browser_download_url')
-          ASSET_NAME=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name | contains("windows_x64.zip")) | .name')
-          PUBLISHED_AT=$(echo "$RELEASE_INFO" | jq -r '.published_at')
+          echo "should_process=$SHOULD_PROCESS" >> $GITHUB_OUTPUT
           
-          # 5. Restore original robust regex for asset version extraction
-          # (Upstream tags can sometimes differ from the definitive asset filename)
-          VERSION=$(echo "$ASSET_NAME" | grep -oP '(?<=ungoogled-chromium_)[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
-          REVISION=$(echo "$ASSET_NAME" | grep -oP '(?<=-)[0-9]+\.[0-9]+(?=_windows)')
-          
-          echo "ugc_tag=$UGC_TAG" >> $GITHUB_OUTPUT
-          echo "asset_url=$ASSET_URL" >> $GITHUB_OUTPUT
-          echo "published_at=$PUBLISHED_AT" >> $GITHUB_OUTPUT
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "revision=$REVISION" >> $GITHUB_OUTPUT
+          # 4. Only parse assets if we actually need to process them
+          if [ "$SHOULD_PROCESS" = "true" ]; then
+            ASSET_URL=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name | contains("windows_x64.zip")) | .browser_download_url')
+            ASSET_NAME=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name | contains("windows_x64.zip")) | .name')
+            PUBLISHED_AT=$(echo "$RELEASE_INFO" | jq -r '.published_at')
+            
+            # Using '|| echo ""' prevents grep from throwing exit code 1 if upstream slightly changes naming schemes
+            VERSION=$(echo "$ASSET_NAME" | grep -oP '(?<=ungoogled-chromium_)[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || echo "")
+            REVISION=$(echo "$ASSET_NAME" | grep -oP '(?<=-)[0-9]+\.[0-9]+(?=_windows)' || echo "")
+            
+            # Failsafe check just in case upstream changes their zip file name entirely
+            if [ -z "$VERSION" ] || [ -z "$REVISION" ]; then
+              echo "::error::Could not extract VERSION or REVISION from asset name: $ASSET_NAME. Upstream may have changed their naming format."
+              exit 1 # We DO want an alert here because the workflow code needs fixing
+            fi
+            
+            echo "ugc_tag=$UGC_TAG" >> $GITHUB_OUTPUT
+            echo "asset_url=$ASSET_URL" >> $GITHUB_OUTPUT
+            echo "published_at=$PUBLISHED_AT" >> $GITHUB_OUTPUT
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "revision=$REVISION" >> $GITHUB_OUTPUT
+          fi
 
       - name: Download and repackage
         if: steps.check.outputs.should_process == 'true'
@@ -81,14 +91,10 @@ jobs:
           mkdir -p temp_extract chrome-win
           unzip -q original.zip -d temp_extract
           
-          # Move inner directory contents into chrome-win seamlessly
           INNER_DIR=$(find temp_extract -mindepth 1 -maxdepth 1 -type d)
           mv "$INNER_DIR"/* chrome-win/
           
-          # Zip final asset
           zip -q -r chrome-win.zip chrome-win
-          
-          # Clean up temp files locally to save workspace space
           rm -rf temp_extract original.zip
 
       - name: Create updateurl.txt
@@ -101,7 +107,6 @@ jobs:
           browser=chromium;os=windows;architecture=64-bit;timestamp=$TIMESTAMP;editor=ungoogled;channel=stable;repository=https://github.com/${{ github.repository }}/releases;download=https://github.com/${{ github.repository }}/releases/latest/download/chrome-win.zip;version=${{ steps.check.outputs.version }};revision=${{ steps.check.outputs.revision }};commit=$COMMIT
           EOF
           
-          # Remove formatting whitespace
           sed -i 's/^[[:space:]]*//' updateurl.txt
 
       - name: Publish GitHub Release
