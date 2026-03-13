@@ -14,7 +14,7 @@ ChromiumUpdateUrl=https://github.com/lnxsnw/ugc-chrlauncher-win64/releases/lates
 # Command line for Chromium (string):
 # See here: https://peter.sh/experiments/chromium-command-line-switches/
 # Use below to use on any device, portable mode (WARNING: Disables App Bound Encryption to work):
-#ChromiumCommandLine=--flag-switches-begin --user-data-dir=..\profile --no-default-browser-check --no-first-run --disable-encryption --disable-machine-id --disable-gpu-shader-disk-cache --disk-cache-size=1 --media-cache-size=1 --disable-background-networking --disable-logging --no-report-upload --disable-features=DeviceBoundSessions,EnableBoundSessionCredentials,EnableBoundSessionCredentialsSoftwareKeysForManualTesting,PersistDeviceBoundSessions,MediaRouter,Translate --flag-switches-end
+#ChromiumCommandLine=--flag-switches-begin --user-data-dir=..\profile --no-default-browser-check --disable-encryption --disable-machine-id --disable-gpu-shader-disk-cache --disk-cache-size=1 --media-cache-size=1 --disable-background-networking --disable-logging --no-report-upload --disable-features=DeviceBoundSessions,EnableBoundSessionCredentials,EnableBoundSessionCredentialsSoftwareKeysForManualTesting,PersistDeviceBoundSessions,MediaRouter,Translate --flag-switches-end
 # Else, use chrlauncher's defaults:
 ChromiumCommandLine=--flag-switches-begin --user-data-dir=..\profile --no-default-browser-check --disable-logging --no-report-upload --flag-switches-end
 
